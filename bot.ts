@@ -1,6 +1,6 @@
 /* eslint-disable @typescript-eslint/no-floating-promises */
-import { Composer, Markup, Scenes, session, Telegraf, Context } from 'telegraf'
-import {createConnection, QueryError, OkPacket, RowDataPacket} from 'mysql2'
+import { Composer, Markup, Scenes, session, Telegraf} from 'telegraf'
+import {createConnection, createPool, QueryError, OkPacket, RowDataPacket} from 'mysql2'
 import { token, dbInfo } from './env'
 import { getTicketInfo } from './utils/ticketHelper'
 import { Guest } from './models/Guest'
@@ -12,7 +12,8 @@ if (token === undefined) {
 
 // let arr: Guest[] = []
 
-let connection = createConnection({
+let connection = createPool({
+    connectionLimit: dbInfo.connectionLimit,
     host: dbInfo.host,
     user: dbInfo.user,
     password: dbInfo.password,
