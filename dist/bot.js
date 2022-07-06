@@ -11,6 +11,7 @@ var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, ge
 Object.defineProperty(exports, "__esModule", { value: true });
 /* eslint-disable @typescript-eslint/no-floating-promises */
 const telegraf_1 = require("telegraf");
+const mysql2_1 = require("mysql2");
 const env_1 = require("./env");
 if (env_1.token === undefined) {
     throw new Error('BOT_TOKEN must be provided!');
@@ -37,6 +38,12 @@ function getTicketInfo(ctx) {
         'Билет: ' + getTicketDescription(ctx.session.guestProp.ticket_type) + '\n';
 }
 let arr = [];
+let connection = (0, mysql2_1.createConnection)({
+    host: env_1.dbInfo.host,
+    user: env_1.dbInfo.user,
+    password: env_1.dbInfo.password,
+    database: env_1.dbInfo.database
+});
 const nameStepHandler = new telegraf_1.Composer();
 nameStepHandler.on('text', (ctx) => __awaiter(void 0, void 0, void 0, function* () {
     ctx.session.guestProp.name = ctx.message.text;
@@ -75,9 +82,23 @@ const preCheckoutStepHandler = new telegraf_1.Composer();
 preCheckoutStepHandler.action('ok', (ctx) => __awaiter(void 0, void 0, void 0, function* () {
     ctx.session.guestProp.registered = true;
     arr.push(ctx.session.guestProp);
-    yield ctx.reply('Вы успешно зарегистрировались на мероприятие');
-    yield ctx.reply('Оплатите билет по следующей ссылке: http://scam.money/cstati');
-    return ctx.scene.leave();
+    let sql_wave1 = 'INSERT INTO guests_wave1 (regId, name, phone, type, payment) VALUES (?,?,?,?,?)';
+    let args = [ctx.session.guestProp.id, ctx.session.guestProp.name, ctx.session.guestProp.phone, ctx.session.guestProp.ticket_type, false];
+    connection.query(sql_wave1, args, (err, result) => {
+        if (err) {
+            console.log(err.message);
+            ctx.reply('Вы не успели зарегистрироваться на мероприятие: волна закрыта');
+            return ctx.scene.leave();
+        }
+        else {
+            ctx.reply('Вы успешно зарегистрировались на мероприятие');
+            ctx.reply('Оплатите билет по следующей ссылке: http://scam.money/cstati');
+            return ctx.scene.leave();
+        }
+    });
+    // await ctx.reply('Вы успешно зарегистрировались на мероприятие')
+    // await ctx.reply('Оплатите билет по следующей ссылке: http://scam.money/cstati')
+    // return ctx.scene.leave()
 }));
 preCheckoutStepHandler.action('edit', (ctx) => __awaiter(void 0, void 0, void 0, function* () {
     yield ctx.reply('Выберете, что нужно отредактировать', telegraf_1.Markup.inlineKeyboard([
@@ -154,20 +175,61 @@ baseScene.command('start', (ctx) => __awaiter(void 0, void 0, void 0, function* 
     yield ctx.reply('С помощью этого бота Вы сможете купить билет. Чтобы продолжить введите /buy');
 }));
 baseScene.command('buy', (ctx) => __awaiter(void 0, void 0, void 0, function* () {
+    // if (ctx.session.guestProp === undefined) {
+    //
+    //     let guest = arr.find(x => x.id == ctx.from.id)
+    //
+    //     if (guest === undefined) {
+    //         ctx.session.guestProp = new Guest(ctx.from.id)
+    //     } else {
+    //         ctx.session.guestProp = guest
+    //     }
+    // }
+    //
+    // if (ctx.session.guestProp.registered) {
+    //     await ctx.reply('Вы уже зарегистрировались')
+    //     return
+    // }
     if (ctx.session.guestProp === undefined) {
-        let guest = arr.find(x => x.id == ctx.from.id);
-        if (guest === undefined) {
-            ctx.session.guestProp = new Guest(ctx.from.id);
+        console.log('Init guest');
+        let sql_check = 'SELECT * FROM guests_wave1 WHERE regId = ?';
+        let args = [ctx.from.id];
+        connection.query(sql_check, args, (err, result) => {
+            if (err) {
+                console.log(err.message);
+                ctx.reply('Что-то пошло не так' + err.message);
+                return ctx.scene.leave();
+            }
+            else {
+                if (result.length == 0) {
+                    ctx.session.guestProp = new Guest(ctx.from.id);
+                }
+                else {
+                    ctx.session.guestProp = new Guest(result[0].regId);
+                    ctx.session.guestProp.name = result[0].name;
+                    ctx.session.guestProp.phone = result[0].phone;
+                    ctx.session.guestProp.ticket_type = result[0].type;
+                    ctx.session.guestProp.registered = true;
+                }
+                if (ctx.session.guestProp.registered) {
+                    ctx.reply('Вы уже зарегистрировались');
+                }
+                else {
+                    ctx.scene.enter('disclaimer');
+                }
+            }
+        });
+    }
+    else {
+        console.log('Guest in ctx');
+        if (ctx.session.guestProp.registered) {
+            ctx.reply('Вы уже зарегистрировались');
         }
         else {
-            ctx.session.guestProp = guest;
+            ctx.scene.enter('disclaimer');
         }
     }
-    if (ctx.session.guestProp.registered) {
-        yield ctx.reply('Вы уже зарегистрировались');
-        return;
-    }
-    yield ctx.scene.enter('disclaimer');
+    // await ctx.scene.enter('disclaimer')
 }));
 const bot = new telegraf_1.Telegraf(env_1.token);
 const stage = new telegraf_1.Scenes.Stage([ticketWizard, disclaimerScene, baseScene], {
@@ -177,6 +239,9 @@ bot.use((0, telegraf_1.session)());
 bot.use(stage.middleware());
 bot.launch();
 // bot.telegram.sendMessage(865009597, 'hi')
-process.once('SIGINT', () => bot.stop('SIGINT'));
+process.once('SIGINT', () => {
+    connection.end();
+    bot.stop('SIGINT');
+});
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
 //# sourceMappingURL=bot.js.map

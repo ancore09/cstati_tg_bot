@@ -1,60 +1,108 @@
 /* eslint-disable @typescript-eslint/no-floating-promises */
 import { Composer, Markup, Scenes, session, Telegraf, Context } from 'telegraf'
-
-import { token } from './env'
+import {createConnection, QueryError, OkPacket, RowDataPacket} from 'mysql2'
+import { token, dbInfo } from './env'
+import { getTicketInfo } from './utils/ticketHelper'
+import { Guest } from './models/Guest'
+import { TicketContext } from './models/TicketContext'
 
 if (token === undefined) {
-    throw new Error('BOT_TOKEN must be provided!')
+    throw new Error('token must be provided!')
 }
 
-class Guest {
-    public id: number
-    public name: string
-    public phone: string
-    public ticket_type: number
-    public registered: Boolean = false
-    public edit: string
+// let arr: Guest[] = []
 
-    constructor(id) {
-        this.id = id
+let connection = createConnection({
+    host: dbInfo.host,
+    user: dbInfo.user,
+    password: dbInfo.password,
+    database: dbInfo.database
+})
+
+/* Base Scene where all transitions to the other scenes are made */
+
+const baseScene = new Scenes.BaseScene<TicketContext>('base')
+baseScene.command('start', async (ctx) => {
+    await ctx.reply('С помощью этого бота Вы сможете купить билет. Чтобы продолжить введите /buy')
+})
+baseScene.command('buy', async (ctx) => {
+
+    // if (ctx.session.guestProp === undefined) {
+    //
+    //     let guest = arr.find(x => x.id == ctx.from.id)
+    //
+    //     if (guest === undefined) {
+    //         ctx.session.guestProp = new Guest(ctx.from.id)
+    //     } else {
+    //         ctx.session.guestProp = guest
+    //     }
+    // }
+    //
+    // if (ctx.session.guestProp.registered) {
+    //     await ctx.reply('Вы уже зарегистрировались')
+    //     return
+    // }
+
+    if (ctx.session.guestProp === undefined) {
+        console.log('Init guest')
+        let sql_check = 'SELECT * FROM guests_wave1 WHERE regId = ?'
+        let args = [ctx.from.id]
+
+        connection.query(sql_check, args,(err: QueryError, result: RowDataPacket[]) => {
+            if (err) {
+                console.log(err.message)
+                ctx.reply('Что-то пошло не так' + err.message)
+                return ctx.scene.leave()
+            } else {
+                if (result.length == 0) {
+                    ctx.session.guestProp = new Guest(ctx.from.id)
+                } else {
+                    ctx.session.guestProp = new Guest(result[0].regId)
+                    ctx.session.guestProp.name = result[0].name
+                    ctx.session.guestProp.phone = result[0].phone
+                    ctx.session.guestProp.ticket_type = result[0].type
+                    ctx.session.guestProp.registered = true
+                }
+
+                if (ctx.session.guestProp.registered) {
+                    ctx.reply('Вы уже зарегистрировались')
+                } else {
+                    ctx.scene.enter('disclaimer')
+                }
+            }
+        })
+    } else {
+        console.log('Guest in ctx')
+        if (ctx.session.guestProp.registered) {
+            ctx.reply('Вы уже зарегистрировались')
+        } else {
+            ctx.scene.enter('disclaimer')
+        }
     }
-}
+    // await ctx.scene.enter('disclaimer')
+})
 
-function getTicketDescription(type: number) {
-    switch (type) {
-        case 1:
-            return "Стандартный билет"
-        case 2:
-            return "Крутой билет"
-    }
-}
+/* Disclaimer scene to display some info */
 
-function getTicketInfo(ctx: any) {
-    return '------Информация о регистрации------\n' +
-        'Номер регистрации: ' + ctx.session.guestProp.id + '\n' +
-        'Имя: ' + ctx.session.guestProp.name + '\n' +
-        'Номер телефона: ' + ctx.session.guestProp.phone + '\n' +
-        'Билет: ' + getTicketDescription(ctx.session.guestProp.ticket_type) + '\n'
-}
+const disclaimerScene = new Scenes.BaseScene<TicketContext>('disclaimer')
+disclaimerScene.enter(async (ctx) => {
+    await ctx.reply('*Отказ от ответственности во время мероприятия*', Markup.inlineKeyboard([
+        Markup.button.callback('Принимаю', 'accept'),
+    ]))
+})
 
-interface TicketSession extends Scenes.WizardSession {
-    // will be available under `ctx.session.mySessionProp`
-    guestProp: Guest
-}
+disclaimerScene.on('text',async (ctx) => {
+    await ctx.reply('*Отказ от ответственности во время мероприятия*', Markup.inlineKeyboard([
+        Markup.button.callback('Принимаю', 'accept'),
+    ]))
+})
 
-interface TicketContext extends Context {
-    // will be available under `ctx.myContextProp`
-    myContextProp: string
+disclaimerScene.action('accept', async (ctx) => {
+    await ctx.reply('Запускается процесс регистрации')
+    ctx.scene.enter('ticket-wizard')
+})
 
-    // declare session type
-    session: TicketSession
-    // declare scene type
-    scene: Scenes.SceneContextScene<TicketContext, Scenes.WizardSessionData>
-    // declare wizard type
-    wizard: Scenes.WizardContextWizard<TicketContext>
-}
-
-let arr: Guest[] = []
+/* Wizard step for entering name */
 
 const nameStepHandler = new Composer<TicketContext>()
 nameStepHandler.on('text', async (ctx) => {
@@ -63,6 +111,8 @@ nameStepHandler.on('text', async (ctx) => {
     await ctx.reply('Введите свой номер телефона')
     ctx.wizard.next()
 })
+
+/* Wizard step for entering phone */
 
 const phoneStepHandler = new Composer<TicketContext>()
 phoneStepHandler.on('text', async (ctx) => {
@@ -74,6 +124,8 @@ phoneStepHandler.on('text', async (ctx) => {
     ]))
     ctx.wizard.next()
 })
+
+/* Wizard step for selecting ticket */
 
 const ticketStepHandler = new Composer<TicketContext>()
 ticketStepHandler.action('ticket1', async (ctx) => {
@@ -100,15 +152,32 @@ ticketStepHandler.action('ticket2', async (ctx) => {
     return ctx.wizard.next()
 })
 
+/* Wizard step for displaying info */
+
 const preCheckoutStepHandler = new Composer<TicketContext>()
 preCheckoutStepHandler.action('ok', async (ctx) => {
     ctx.session.guestProp.registered = true
 
-    arr.push(ctx.session.guestProp)
+    // arr.push(ctx.session.guestProp)
 
-    await ctx.reply('Вы успешно зарегистрировались на мероприятие')
-    await ctx.reply('Оплатите билет по следующей ссылке: http://scam.money/cstati')
-    return ctx.scene.leave()
+    let sql_wave1 = 'INSERT INTO guests_wave1 (regId, name, phone, type, payment) VALUES (?,?,?,?,?)'
+    let args = [ctx.session.guestProp.id, ctx.session.guestProp.name, ctx.session.guestProp.phone, ctx.session.guestProp.ticket_type, false]
+
+    connection.query(sql_wave1, args,(err: QueryError, result: OkPacket) => {
+        if (err) {
+            console.log(err.message)
+            ctx.reply('Вы не успели зарегистрироваться на мероприятие: волна закрыта')
+            return ctx.scene.leave()
+        } else {
+            ctx.reply('Вы успешно зарегистрировались на мероприятие')
+            ctx.reply('Оплатите билет по следующей ссылке: http://scam.money/cstati')
+            return ctx.scene.leave()
+        }
+    })
+
+    // await ctx.reply('Вы успешно зарегистрировались на мероприятие')
+    // await ctx.reply('Оплатите билет по следующей ссылке: http://scam.money/cstati')
+    // return ctx.scene.leave()
 })
 
 preCheckoutStepHandler.action('edit', async (ctx) => {
@@ -126,6 +195,8 @@ preCheckoutStepHandler.action('cancel', async (ctx) => {
     await ctx.reply('Регистрация отменена')
     return ctx.scene.leave()
 })
+
+/* Wizard step for editing info */
 
 const editStepHandler = new Composer<TicketContext>()
 editStepHandler.action('name', async (ctx) => {
@@ -171,6 +242,7 @@ editStepHandler.on('text', async (ctx) => {
     }
 })
 
+/* Wizard Scene for registration */
 
 const ticketWizard = new Scenes.WizardScene(
     'ticket-wizard',
@@ -185,48 +257,6 @@ const ticketWizard = new Scenes.WizardScene(
     editStepHandler
 )
 
-const disclaimerScene = new Scenes.BaseScene<TicketContext>('disclaimer')
-disclaimerScene.enter(async (ctx) => {
-    await ctx.reply('*Отказ от ответственности во время мероприятия*', Markup.inlineKeyboard([
-        Markup.button.callback('Принимаю', 'accept'),
-    ]))
-})
-
-disclaimerScene.on('text',async (ctx) => {
-    await ctx.reply('*Отказ от ответственности во время мероприятия*', Markup.inlineKeyboard([
-        Markup.button.callback('Принимаю', 'accept'),
-    ]))
-})
-
-disclaimerScene.action('accept', async (ctx) => {
-    await ctx.reply('Запускается процесс регистрации')
-    ctx.scene.enter('ticket-wizard')
-})
-
-const baseScene = new Scenes.BaseScene<TicketContext>('base')
-baseScene.command('start', async (ctx) => {
-    await ctx.reply('С помощью этого бота Вы сможете купить билет. Чтобы продолжить введите /buy')
-})
-baseScene.command('buy', async (ctx) => {
-    if (ctx.session.guestProp === undefined) {
-
-        let guest = arr.find(x => x.id == ctx.from.id)
-
-        if (guest === undefined) {
-            ctx.session.guestProp = new Guest(ctx.from.id)
-        } else {
-            ctx.session.guestProp = guest
-        }
-    }
-
-    if (ctx.session.guestProp.registered) {
-        await ctx.reply('Вы уже зарегистрировались')
-        return
-    }
-
-    await ctx.scene.enter('disclaimer')
-})
-
 const bot = new Telegraf<TicketContext>(token)
 
 const stage = new Scenes.Stage<TicketContext>([ticketWizard, disclaimerScene, baseScene], {
@@ -239,5 +269,8 @@ bot.launch()
 
 // bot.telegram.sendMessage(865009597, 'hi')
 
-process.once('SIGINT', () => bot.stop('SIGINT'))
+process.once('SIGINT', () => {
+    connection.end()
+    bot.stop('SIGINT')
+})
 process.once('SIGTERM', () => bot.stop('SIGTERM'))

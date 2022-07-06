@@ -16,6 +16,7 @@
   },
   "dependencies": {
     "@types/node": "^18.0.1",
+    "mysql2": "^2.3.3",
     "telegraf": "^4.8.5"
   }
 }
